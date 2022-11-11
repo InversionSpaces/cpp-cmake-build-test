@@ -1,0 +1,79 @@
+name: Build & Test
+
+on:
+  workflow_call:
+    inputs:
+      path:
+        description: 'Path for repo to clone (relative to $GITHUB_WORKSPACE).'
+        default: '.'
+        required: false
+        type: string
+      image:
+        description: 'Container image to run on.'
+        required: true
+        type: string
+      build-type:
+        description: 'CMake build type.'
+        default: Debug
+        required: false
+        type: string
+      cmake-args:
+        description: 'Additional CMake args.'
+        default: ''
+        required: false
+        type: string
+      
+    secrets:
+      pat:
+        description: 'Github PAT for pulling container image and checking out submodules.'
+        required: true
+
+jobs:
+  build-and-test:
+    # The CMake configure and build commands are platform agnostic and should work equally well on Windows or Mac.
+    # You can convert this to a matrix build if you need cross-platform coverage.
+    # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ inputs.image }}
+    steps:
+      - name: Setup env
+        run: |
+          # WARNING: ${{ github.workspace }} resolve incorrectly while running in container
+          # see: https://github.com/actions/runner/issues/2058
+          echo "WORKSPACE=$GITHUB_WORKSPACE/${{ inputs.path }}" >> $GITHUB_ENV
+          echo "CCACHE_DIR=$GITHUB_WORKSPACE/ccache" >> $GITHUB_ENV
+      
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          path: ${{ env.WORKSPACE }}
+          submodules: recursive
+          token: ${{ secrets.pat }}
+
+      - name: Restore cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: cmake-cache-${{ github.ref_name }}-${{ inputs.build-type }}
+          restore-keys: cmake-cache-
+
+      - name: CMake configure
+        # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
+        # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
+        # NOTE: Using ccache as compiler launcher
+        run: >
+          cmake 
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache 
+          -B ${{ env.WORKSPACE }}/build 
+          -S ${{ env.WORKSPACE }} 
+          -DCMAKE_BUILD_TYPE=${{ inputs.build-type }} 
+          ${{ inputs.cmake-args }}
+
+      - name: CMake build
+        # Build program with the given configuration
+        run: cmake --build ${{ env.WORKSPACE }}/build --config ${{ inputs.build-type }} --parallel $(nproc)
+      
+      - name: Run CTest
+        run: ctest --test-dir ${{ env.WORKSPACE }}/build -j $(nproc)
